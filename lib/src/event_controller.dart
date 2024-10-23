@@ -6,9 +6,7 @@ import 'dart:collection';
 
 import 'package:flutter/material.dart';
 
-import 'calendar_event_data.dart';
-import 'extensions.dart';
-import 'typedefs.dart';
+import '../calendar_view.dart';
 
 class EventController<T extends Object?> extends ChangeNotifier {
   /// Calendar controller to control all the events related operations like,
@@ -73,7 +71,175 @@ class EventController<T extends Object?> extends ChangeNotifier {
 
   //#endregion
 
+  //#region Private Methods
+
+  // TODO(Shubham): Review comment
+  // isAtSameMomentAs is used to include end date
+  // Ex. If event end date is 15-11-24 then event will be added on 15-11-24 as well.
+  bool _isDailyRecurrence({
+    required DateTime currentDate,
+    required RecurrenceSettings recurrenceSettings,
+  }) {
+    final recurrenceEndDate = recurrenceSettings.endDate;
+
+    if (recurrenceEndDate == null) {
+      return true;
+    }
+
+    return currentDate.isBefore(recurrenceEndDate) ||
+        currentDate.isAtSameMomentAs(recurrenceEndDate);
+  }
+
+  /// If the weekday matches with `recurrenceSettings` and there is no end date, the recurrence is infinite
+  ///
+  ///
+  /// If the weekday matches and there is an end date, check if the current date is before or on the end date
+  /// This ensures the recurrence continues until the specified end date
+  ///
+  /// Recurrence endDate may change if event is deleted.
+  bool _isWeeklyRecurrence({
+    required DateTime currentDate,
+    required RecurrenceSettings recurrenceSettings,
+  }) {
+    // Adjust weekday to zero-based indexing and
+    // check if date’s weekday is in the recurrence weekdays
+    final isMatchingWeekday =
+        recurrenceSettings.weekdays.contains(currentDate.weekday - 1);
+    final recurrenceEndDate = recurrenceSettings.endDate;
+
+    if (!isMatchingWeekday) {
+      return false;
+    }
+
+    // If no end date is specified, repeat infinitely
+    return recurrenceEndDate == null ||
+        (currentDate.isBefore(recurrenceEndDate) ||
+            currentDate.isAtSameMomentAs(recurrenceEndDate));
+  }
+
+  bool _isMonthlyRecurrence({
+    required DateTime currentDate,
+    required DateTime startDate,
+    required RecurrenceSettings recurrenceSettings,
+  }) {
+    // Exclude dates before the start date or if the day of the month doesn't match
+    if (currentDate.isBefore(startDate) || currentDate.day != startDate.day) {
+      return false;
+    }
+
+    final recurrenceEndDate = recurrenceSettings.endDate;
+
+    switch (recurrenceSettings.recurrenceEndOn) {
+      case RecurrenceEnd.never:
+        // If recurrence never ends, it should repeat indefinitely
+        return recurrenceEndDate == null ||
+            currentDate.isBefore(recurrenceEndDate);
+
+      case RecurrenceEnd.on:
+      case RecurrenceEnd.after:
+        return recurrenceEndDate != null &&
+            (currentDate.isBefore(recurrenceEndDate) ||
+                (currentDate.isAtSameMomentAs(recurrenceEndDate)));
+    }
+  }
+
+  bool _handleRecurrence({
+    required DateTime currentDate,
+    required DateTime eventStartDate,
+    required DateTime eventEndDate,
+    required RecurrenceSettings recurrenceSettings,
+  }) {
+    if (recurrenceSettings.excludeDates?.contains(currentDate) ?? false) {
+      return false;
+    }
+    switch (recurrenceSettings.frequency) {
+      case RepeatFrequency.daily:
+        return _isDailyRecurrence(
+          currentDate: currentDate,
+          recurrenceSettings: recurrenceSettings,
+        );
+      case RepeatFrequency.weekly:
+        return _isWeeklyRecurrence(
+          currentDate: currentDate,
+          recurrenceSettings: recurrenceSettings,
+        );
+      case RepeatFrequency.monthly:
+        return _isMonthlyRecurrence(
+          currentDate: currentDate,
+          startDate: eventStartDate,
+          recurrenceSettings: recurrenceSettings,
+        );
+      case RepeatFrequency.yearly:
+        // TODO(Shubham): Handle this case.
+        break;
+      case RepeatFrequency.doNotRepeat:
+        break;
+    }
+    return false;
+  }
+
+  void _deleteCurrentEvent(DateTime date, CalendarEventData<T> event) {
+    List<DateTime> excludeDates = event.recurrenceSettings?.excludeDates ?? [];
+    excludeDates.add(date);
+    final updatedRecurrenceSettings =
+        event.recurrenceSettings?.copyWith(excludeDates: excludeDates);
+    final updatedEvent =
+        event.copyWith(recurrenceSettings: updatedRecurrenceSettings);
+    update(event, updatedEvent);
+  }
+
+  /// If the selected date to delete the event is the same as the event's start date, delete all recurrences.
+  /// Otherwise, delete the event on the selected date and all subsequent recurrences.
+  void _deleteFollowingEvents(DateTime date, CalendarEventData<T> event) {
+    final newEndDate = date.subtract(
+      Duration(days: 1),
+    );
+    final updatedRecurrenceSettings = event.recurrenceSettings?.copyWith(
+      endDate: newEndDate,
+    );
+    if (date == event.date) {
+      remove(event);
+    } else {
+      final updatedEvent =
+          event.copyWith(recurrenceSettings: updatedRecurrenceSettings);
+      update(event, updatedEvent);
+    }
+  }
+  //#endregion
+
   //#region Public Methods
+  /// Deletes a recurring event based on the specified deletion type.
+  ///
+  /// This method handles the deletion of recurring events by determining the type of deletion
+  /// requested (all events, the current event, or following events) and performing the appropriate action.
+  ///
+  /// Takes the following parameters:
+  /// - [date]: The date of the event to be deleted.
+  /// - [event]: The event data to be deleted.
+  /// - [deleteEventType]: The `DeleteEventType` of deletion to perform (all events, the current event, or following events).
+  ///
+  /// The method performs the following actions based on the [deleteEventType]:
+  /// - [DeleteEvent.all]: Removes the entire series of events.
+  /// - [DeleteEvent.current]: Deletes only the current event.
+  /// - [DeleteEvent.following]: Deletes the current event and all subsequent events.
+  void deleteRecurrenceEvent({
+    required DateTime date,
+    required CalendarEventData<T> event,
+    required DeleteEvent deleteEventType,
+  }) {
+    switch (deleteEventType) {
+      case DeleteEvent.all:
+        remove(event);
+        break;
+      case DeleteEvent.current:
+        _deleteCurrentEvent(date, event);
+        break;
+      case DeleteEvent.following:
+        _deleteFollowingEvents(date, event);
+        break;
+    }
+  }
+
   /// Add all the events in the list
   /// If there is an event with same date then
   void addAll(List<CalendarEventData<T>> events) {
@@ -137,9 +303,59 @@ class EventController<T extends Object?> extends ChangeNotifier {
       {bool includeFullDayEvents = true}) {
     //ignore: deprecated_member_use_from_same_package
     if (_eventFilter != null) return _eventFilter!.call(date, this.events);
-
     return _calendarData.getEventsOnDay(date.withoutTime,
         includeFullDayEvents: includeFullDayEvents);
+  }
+
+  /// Retrieves all events for a given date, including repeated events that are not excluded on that day.
+  ///
+  /// This method combines events that occur on the specified date with repeated events that are not excluded.
+  /// It filters out any events that are marked as excluded for the given date.
+  ///
+  /// Takes a [date] parameter representing the date for which to retrieve events.
+  /// Returns a list of [CalendarEventData] objects representing all events on the specified date.
+  List<CalendarEventData<T>> getAllEventsOnDay(DateTime date) {
+    final events =
+        getEventsOnDay(date).where((event) => !event.isExcluded(date)).toList();
+    final repeatedEvents =
+        getRepeatedEvents(date).where((event) => !event.isExcluded(date));
+    events.addAll(repeatedEvents);
+
+    return events;
+  }
+
+  /// Filters list of repeated events to show in the cell for given date
+  /// from all the repeated events.
+  /// Event reoccurrence will only show after today's date and event's day.
+  List<CalendarEventData<T>> getRepeatedEvents(DateTime date) {
+    // Past event date may not support
+    if (!date.isAfter(DateTime.now())) {
+      return [];
+    }
+
+    final repeatedEvents = _calendarData.repeatedEvents;
+    List<CalendarEventData<T>> events = [];
+
+    for (final event in repeatedEvents) {
+      if (!date.isAfter(event.date)) {
+        continue;
+      }
+      final recurrenceSettings = event.recurrenceSettings;
+      //  if event is not repeating or date is in excluded
+      if (recurrenceSettings == null) {
+        continue;
+      }
+      final isRecurrence = _handleRecurrence(
+        currentDate: date,
+        eventStartDate: event.date,
+        eventEndDate: event.endDate,
+        recurrenceSettings: recurrenceSettings,
+      );
+      if (isRecurrence) {
+        events.add(event);
+      }
+    }
+    return events;
   }
 
   /// Returns full day events on given day.
@@ -178,6 +394,10 @@ class CalendarData<T extends Object?> {
   /// Stores all the events in a list(all the items in below 3 list will be
   /// available in this list as global itemList of all events).
   final _eventList = <CalendarEventData<T>>[];
+
+  /// If recurrence settings exist then get all the repeated events
+  List<CalendarEventData<T>> get repeatedEvents =>
+      _eventList.where((event) => event.recurrenceSettings != null).toList();
 
   UnmodifiableListView<CalendarEventData<T>> get events =>
       UnmodifiableListView(_eventList);
@@ -249,7 +469,6 @@ class CalendarData<T extends Object?> {
 
     // TODO: improve this...
     if (_eventList.contains(event)) return;
-
     if (event.isFullDayEvent) {
       addFullDayEvent(event);
     } else if (event.isRangingEvent) {
@@ -329,7 +548,6 @@ class CalendarData<T extends Object?> {
     if (includeFullDayEvents) {
       events.addAll(getFullDayEvent(date));
     }
-
     return events;
   }
 
